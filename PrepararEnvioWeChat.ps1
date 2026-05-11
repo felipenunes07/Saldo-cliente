@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$WorkbookPath = "",
     [string]$MapPath = "",
     [switch]$Silent,
@@ -128,11 +128,11 @@ function Find-DiarioBlocks {
             $f = (Normalize-Text $Sheet.Cells($scan, 6).Value2).ToUpperInvariant()
             $g = (Normalize-Text $Sheet.Cells($scan, 7).Value2).ToUpperInvariant()
             $h = (Normalize-Text $Sheet.Cells($scan, 8).Value2).ToUpperInvariant()
-            if ($f -eq "DATA" -and ($g -like "HORARIO*" -or $g -like "HORÃRIO*") -and $h -eq "BANCO") {
+            if ($f -eq "DATA" -and ($g -like "HORARIO*" -or $g -like "HORÃ RIO*") -and $h -eq "BANCO") {
                 $headerRow = $scan
                 break
             }
-            if (($f -like "HORARIO*" -or $f -like "HORÃRIO*") -and $g -eq "BANCO" -and $h -like "TRANSFER*") {
+            if (($f -like "HORARIO*" -or $f -like "HORÃ RIO*") -and $g -eq "BANCO" -and $h -like "TRANSFER*") {
                 $headerRow = $scan
                 break
             }
@@ -247,29 +247,48 @@ function Export-RangeImage {
     param(
         [object]$Sheet,
         [string]$Address,
-        [string]$OutputPath
+        [string]$OutputPath,
+        [double]$Scale = 1.0
     )
 
-    Write-PrepareLog "Exportando imagem: $Address -> $OutputPath"
+    Write-PrepareLog "Exportando imagem ($Scale`x): $Address -> $OutputPath"
     $range = $Sheet.Range($Address)
     $Sheet.Activate() | Out-Null
+    
     $window = $Sheet.Application.ActiveWindow
+    $oldGrid = $true
     if ($null -ne $window) {
+        $oldGrid = $window.DisplayGridlines
+        $window.DisplayGridlines = $false
         $window.ScrollRow = [Math]::Max(1, $range.Row - 2)
         $window.ScrollColumn = [Math]::Max(1, $range.Column - 1)
     }
+    
     $range.Select() | Out-Null
     [System.Windows.Forms.Clipboard]::Clear()
     Start-Sleep -Milliseconds 300
     Write-PrepareLog "CopyPicture inicio: $Address"
-    Invoke-ExcelAction { $range.CopyPicture(1, 2) | Out-Null }
+    
+    if ($Scale -gt 1.0) {
+        Invoke-ExcelAction { $range.CopyPicture(2, -4147) | Out-Null }
+    } else {
+        Invoke-ExcelAction { $range.CopyPicture(1, 2) | Out-Null }
+    }
+    
     Write-PrepareLog "CopyPicture fim: $Address"
+    
+    if ($null -ne $window) {
+        $window.DisplayGridlines = $oldGrid
+    }
+    
     Start-Sleep -Milliseconds 500
 
-    $chartObject = $Sheet.ChartObjects().Add($range.Left, $range.Top, $range.Width + 8, $range.Height + 8)
+    $chartObject = $Sheet.ChartObjects().Add($range.Left, $range.Top, ($range.Width * $Scale) + 4, ($range.Height * $Scale) + 4)
     try {
         $chart = $chartObject.Chart
         $chartObject.Activate() | Out-Null
+        $chart.ChartArea.Border.LineStyle = -4142
+        
         Start-Sleep -Milliseconds 150
         Write-PrepareLog "Chart paste inicio: $Address"
         Invoke-ExcelAction { $chart.Paste() | Out-Null }
@@ -348,7 +367,7 @@ try {
         $saldoImagePath = Join-Path $outputDir ("{0}_saldo.png" -f $safeClient)
         $address = "E$($block.HeaderRow):I$($block.TotalRow)"
         Write-PrepareLog "Cliente $client - comprovantes inicio"
-        Export-RangeImage -Sheet $diario -Address $address -OutputPath $imagePath
+        Export-RangeImage -Sheet $diario -Address $address -OutputPath $imagePath -Scale 1.0
         Write-PrepareLog "Cliente $client - comprovantes fim"
 
         $saldoBlock = $null
@@ -368,7 +387,7 @@ try {
             $endCol = ColumnName $saldoBlock.EndCol
             $saldoAddress = "$startCol$($saldoBlock.StartRow):$endCol$($saldoBlock.EndRow)"
             Write-PrepareLog "Cliente $client - saldo inicio - $saldoAddress"
-            Export-RangeImage -Sheet $saldoClientes -Address $saldoAddress -OutputPath $saldoImagePath
+            Export-RangeImage -Sheet $saldoClientes -Address $saldoAddress -OutputPath $saldoImagePath -Scale 2.0
             Write-PrepareLog "Cliente $client - saldo fim"
         }
 
@@ -493,4 +512,3 @@ try {
         }
     }
 }
-
