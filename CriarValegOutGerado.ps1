@@ -228,9 +228,16 @@ function Copy-Format {
         [object]$DestSheet,
         [string]$DestAddress
     )
-    $SourceSheet.Range($SourceAddress).Copy() | Out-Null
-    $DestSheet.Range($DestAddress).PasteSpecial(-4122) | Out-Null # xlPasteFormats
-    $SourceSheet.Application.CutCopyMode = $false
+    $sourceRange = $SourceSheet.Range($SourceAddress)
+    $destRange = $DestSheet.Range($DestAddress)
+    $sourceRange.Copy() | Out-Null
+    $destRange.PasteSpecial(-4122) | Out-Null # xlPasteFormats
+    $DestSheet.Application.CutCopyMode = $false
+    
+    # Sincroniza a altura da linha para que o tamanho fique igual ao modelo
+    try {
+        $destRange.RowHeight = $sourceRange.RowHeight
+    } catch {}
 }
 
 function Get-ValegTemplateRows {
@@ -312,7 +319,8 @@ function Test-ValegTemplateUsable {
 function Replace-ModelPictures {
     param(
         [object]$SourceWorkbook,
-        [object]$TargetSheet
+        [object]$TargetSheet,
+        [int]$ValegEndRow = 6
     )
 
     $pictures = @($TargetSheet.Shapes | Sort-Object Left)
@@ -343,7 +351,11 @@ function Replace-ModelPictures {
         $newShape.Width = $width
         $newShape.Height = $height
         if ($slot.Sheet -eq "RESUMO SALDO") {
-            $newShape.Top = [double]$TargetSheet.Cells.Item(6, 2).Top
+            # Posiciona o resumo saldo abaixo do bloco VALEG para nao ficar em cima
+            $targetRow = [Math]::Max(6, $ValegEndRow + 2)
+            $newShape.Top = [double]$TargetSheet.Cells.Item($targetRow, 1).Top
+            # Alinha na Coluna C (3) para ficar mais centralizado e nao na pontinha
+            $newShape.Left = [double]$TargetSheet.Cells.Item($targetRow, 3).Left
         }
         $oldShape.Delete() | Out-Null
         $TargetSheet.Application.CutCopyMode = $false
@@ -504,16 +516,21 @@ function Write-OutBlock {
 function Write-MoneyBlock {
     param([object]$Sheet, [object]$TemplateSheet, [int]$StartRow, [object[]]$Rows)
     $templateRows = Get-OutTemplateRows -Sheet $TemplateSheet
-    Copy-Format -SourceSheet $TemplateSheet -SourceAddress ("F{0}:J{0}" -f $templateRows.MoneyHeaderRow) -DestSheet $Sheet -DestAddress "F${StartRow}:J${StartRow}"
+    
+    # Usa o formato do Header principal (igual ao do bloco OUT) para ficar no mesmo tamanho
+    Copy-Format -SourceSheet $TemplateSheet -SourceAddress ("F{0}:J{0}" -f $templateRows.HeaderRow) -DestSheet $Sheet -DestAddress "F${StartRow}:J${StartRow}"
     $Sheet.Cells($StartRow, 6).Value2 = "CLIENTE"
     $Sheet.Cells($StartRow, 7).Value2 = "DATA"
     $Sheet.Cells($StartRow, 8).Value2 = "HORA"
     $Sheet.Cells($StartRow, 9).Value2 = "BANCO"
     $Sheet.Cells($StartRow, 10).Value2 = "VALOR"
+    # Centraliza o cabecalho
+    $Sheet.Range("F${StartRow}:J${StartRow}").HorizontalAlignment = -4108 # xlCenter
 
     $r = $StartRow + 1
     foreach ($item in $Rows) {
-        Copy-Format -SourceSheet $TemplateSheet -SourceAddress ("F{0}:J{0}" -f $templateRows.MoneyDataRow) -DestSheet $Sheet -DestAddress "F${r}:J${r}"
+        # Usa o formato do DataRow (igual ao do bloco OUT) para que o tamanho aumente conforme os demais
+        Copy-Format -SourceSheet $TemplateSheet -SourceAddress ("F{0}:J{0}" -f $templateRows.DataRow) -DestSheet $Sheet -DestAddress "F${r}:J${r}"
         $Sheet.Cells($r, 7).NumberFormat = "@"
         $Sheet.Cells($r, 8).NumberFormat = "@"
         $Sheet.Cells($r, 6).Value2 = $item.Client
@@ -521,6 +538,8 @@ function Write-MoneyBlock {
         $Sheet.Cells($r, 8).Value2 = $item.Hour
         $Sheet.Cells($r, 9).Value2 = $item.Bank
         $Sheet.Cells($r, 10).Value2 = Format-PlainNumber $item.Value
+        # Centraliza os valores para ficarem organizados
+        $Sheet.Range("F${r}:J${r}").HorizontalAlignment = -4108 # xlCenter
         $r++
     }
     return [Math]::Max($StartRow, $r - 1)
@@ -558,9 +577,20 @@ function Configure-PdfPage {
 }
 
 function Activate-WeChat {
+    $wshell = New-Object -ComObject WScript.Shell
+    Trace-Step "Tentando ativar janela do WeChat..."
+
+    # Tentativa 1: AppActivate (Metodo mais direto do Windows)
+    if ($wshell.AppActivate("WeChat")) {
+        Start-Sleep -Milliseconds 800
+        return
+    }
+
+    # Tentativa 2: Busca manual por processo com janela visivel
     $process = Get-Process -ErrorAction SilentlyContinue |
         Where-Object {
-            $_.MainWindowHandle -ne 0 -and (
+            $_.MainWindowHandle -ne 0 -and 
+            $_.MainWindowTitle -ne "" -and (
                 $_.ProcessName -like "*WeChat*" -or
                 $_.ProcessName -like "*Weixin*" -or
                 $_.MainWindowTitle -like "*WeChat*"
@@ -570,13 +600,14 @@ function Activate-WeChat {
         Select-Object -First 1
 
     if ($null -eq $process) {
-        throw "Nao encontrei o WeChat aberto. Abra o WeChat Desktop e deixe logado antes de rodar."
+        throw "Nao encontrei o WeChat aberto. Por favor, abra o WeChat Desktop e deixe logado."
     }
 
-    [void][ValegOutWin32Window]::ShowWindowAsync($process.MainWindowHandle, 9)
-    Start-Sleep -Milliseconds 250
+    Trace-Step "Processo WeChat encontrado: $($process.ProcessName). Forcando foco..."
+    [void][ValegOutWin32Window]::ShowWindowAsync($process.MainWindowHandle, 9) # 9 = SW_RESTORE
+    Start-Sleep -Milliseconds 400
     [void][ValegOutWin32Window]::SetForegroundWindow($process.MainWindowHandle)
-    Start-Sleep -Milliseconds 350
+    Start-Sleep -Milliseconds 800
 }
 
 function Send-KeysSafe {
@@ -604,15 +635,21 @@ function Paste-PdfToWeChatDraft {
     Write-Host "NAO vou apertar Enter para enviar."
 
     Activate-WeChat
+    # Limpa o clipboard antes de definir o novo valor para evitar conflitos
+    [System.Windows.Forms.Clipboard]::Clear()
+    Start-Sleep -Milliseconds 100
     Set-Clipboard -Value $GroupName
-    Send-KeysSafe "^f" 300
-    Send-KeysSafe "^a" 120
-    Send-KeysSafe "^v" 600
-    Send-KeysSafe "{ENTER}" 1200
+    Send-KeysSafe "^f" 500
+    Send-KeysSafe "^a" 200
+    Send-KeysSafe "^v" 800
+    Send-KeysSafe "{ENTER}" 2000 # Aumentado para 2s para garantir que o grupo carregue
 
     Activate-WeChat
+    Trace-Step "Copiando PDF para o clipboard: $PdfPath"
     Copy-FileToClipboard -Path $PdfPath
-    Send-KeysSafe "^v" 1000
+    Start-Sleep -Milliseconds 500
+    Send-KeysSafe "^v" 1500
+    Trace-Step "PDF colado no WeChat"
 }
 
 $targetWasDefault = [string]::IsNullOrWhiteSpace($TargetPath)
@@ -694,9 +731,6 @@ try {
     $moneyRows = Read-ChequeDinheiroRows -InSheet $inSheet
     Trace-Step ("dados lidos: VALEG={0} OUT={1} cheque/dinheiro={2}" -f @($valeg.Rows).Count, @($out.Rows).Count, @($moneyRows).Count)
 
-    Trace-Step "atualizando imagens grandes"
-    Replace-ModelPictures -SourceWorkbook $sourceWorkbook -TargetSheet $sheet
-    Trace-Step "imagens grandes atualizadas"
     Ensure-ClearArea -Sheet $sheet
 
     Trace-Step "preenchendo blocos"
@@ -706,19 +740,24 @@ try {
     $moneyEnd = Write-MoneyBlock -Sheet $sheet -TemplateSheet $templateSheet -StartRow $moneyStart -Rows @($moneyRows)
     Trace-Step "blocos preenchidos"
 
+    Trace-Step "atualizando imagens grandes"
+    Replace-ModelPictures -SourceWorkbook $sourceWorkbook -TargetSheet $sheet -ValegEndRow $valegEnd
+    Trace-Step "imagens grandes atualizadas"
+
     for ($c = 1; $c -le 10; $c++) {
         $sheet.Columns.Item($c).ColumnWidth = $templateSheet.Columns.Item($c).ColumnWidth
     }
 
     Configure-PdfPage -Sheet $sheet
 
-    Trace-Step "salvando xlsx"
+    Trace-Step "finalizando processo excel"
     $targetWorkbook.Save() | Out-Null
-    Trace-Step "exportando pdf"
     $sheet.ExportAsFixedFormat(0, $pdfPath) | Out-Null
-    Trace-Step "pdf exportado"
+    Trace-Step "pdf exportado em $pdfPath"
 
     if (-not $SkipWeChat) {
+        Trace-Step "iniciando colagem no WeChat em 2 segundos..."
+        Start-Sleep -Seconds 2
         Paste-PdfToWeChatDraft -PdfPath $pdfPath -GroupName $ResumoGrupoWeChat
     }
 
