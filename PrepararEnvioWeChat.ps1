@@ -248,10 +248,11 @@ function Export-RangeImage {
         [object]$Sheet,
         [string]$Address,
         [string]$OutputPath,
-        [double]$Scale = 1.0
+        [double]$Scale = 1.0,
+        [bool]$ShowGrid = $false
     )
 
-    Write-PrepareLog "Exportando imagem ($Scale`x): $Address -> $OutputPath"
+    Write-PrepareLog "Exportando imagem ($Scale`x, Grid=$ShowGrid): $Address -> $OutputPath"
     $range = $Sheet.Range($Address)
     $Sheet.Activate() | Out-Null
     
@@ -259,7 +260,7 @@ function Export-RangeImage {
     $oldGrid = $true
     if ($null -ne $window) {
         $oldGrid = $window.DisplayGridlines
-        $window.DisplayGridlines = $true # Mantem as linhas de grade para o efeito visual desejado
+        $window.DisplayGridlines = $ShowGrid # Define se mostra ou nao as linhas de grade
         $window.ScrollRow = [Math]::Max(1, $range.Row - 2)
         $window.ScrollColumn = [Math]::Max(1, $range.Column - 1)
     }
@@ -269,8 +270,12 @@ function Export-RangeImage {
     Start-Sleep -Milliseconds 300
     Write-PrepareLog "CopyPicture inicio: $Address"
     
-    # Alta resolucao (xlPrinter + xlPicture)
-    Invoke-ExcelAction { $range.CopyPicture(2, -4147) | Out-Null }
+    # Se a escala for maior que 1, usamos alta resolucao (xlPrinter + xlPicture)
+    if ($Scale -gt 1.0) {
+        Invoke-ExcelAction { $range.CopyPicture(2, -4147) | Out-Null }
+    } else {
+        Invoke-ExcelAction { $range.CopyPicture(1, 2) | Out-Null }
+    }
     
     Write-PrepareLog "CopyPicture fim: $Address"
     
@@ -367,8 +372,8 @@ try {
         $saldoImagePath = Join-Path $outputDir ("{0}_saldo.png" -f $safeClient)
         $address = "E$($block.HeaderRow):I$($block.TotalRow)"
         Write-PrepareLog "Cliente $client - comprovantes inicio"
-        # Ambas agora com escala 2.0 e linhas de grade finas
-        Export-RangeImage -Sheet $diario -Address $address -OutputPath $imagePath -Scale 2.0
+        # Imagem 1 (Diario): Escala 1.0 e SEM linhas de grade
+        Export-RangeImage -Sheet $diario -Address $address -OutputPath $imagePath -Scale 1.0 -ShowGrid $false
         Write-PrepareLog "Cliente $client - comprovantes fim"
 
         $saldoBlock = $null
@@ -388,7 +393,8 @@ try {
             $endCol = ColumnName $saldoBlock.EndCol
             $saldoAddress = "$startCol$($saldoBlock.StartRow):$endCol$($saldoBlock.EndRow)"
             Write-PrepareLog "Cliente $client - saldo inicio - $saldoAddress"
-            Export-RangeImage -Sheet $saldoClientes -Address $saldoAddress -OutputPath $saldoImagePath -Scale 2.0
+            # Imagem 2 (Saldo): Escala 2.0 e COM linhas de grade
+            Export-RangeImage -Sheet $saldoClientes -Address $saldoAddress -OutputPath $saldoImagePath -Scale 2.0 -ShowGrid $true
             Write-PrepareLog "Cliente $client - saldo fim"
         }
 
