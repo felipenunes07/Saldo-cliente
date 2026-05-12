@@ -256,8 +256,10 @@ function Export-RangeImage {
     $Sheet.Activate() | Out-Null
     
     $window = $Sheet.Application.ActiveWindow
+    $oldGrid = $true
     if ($null -ne $window) {
-        # Mantemos as linhas de grade para ficar igual ao exemplo solicitado
+        $oldGrid = $window.DisplayGridlines
+        $window.DisplayGridlines = $false # Remove linhas de grade para fundo branco puro
         $window.ScrollRow = [Math]::Max(1, $range.Row - 2)
         $window.ScrollColumn = [Math]::Max(1, $range.Column - 1)
     }
@@ -267,17 +269,18 @@ function Export-RangeImage {
     Start-Sleep -Milliseconds 300
     Write-PrepareLog "CopyPicture inicio: $Address"
     
-    # Se a escala for maior que 1, usamos alta resolucao (xlPrinter + xlPicture)
-    if ($Scale -gt 1.0) {
-        Invoke-ExcelAction { $range.CopyPicture(2, -4147) | Out-Null }
-    } else {
-        Invoke-ExcelAction { $range.CopyPicture(1, 2) | Out-Null }
-    }
+    # Alta resolucao (xlPrinter + xlPicture) para ambas agora
+    Invoke-ExcelAction { $range.CopyPicture(2, -4147) | Out-Null }
     
     Write-PrepareLog "CopyPicture fim: $Address"
+    
+    if ($null -ne $window) {
+        $window.DisplayGridlines = $oldGrid
+    }
+    
     Start-Sleep -Milliseconds 500
 
-    # Adicionamos uma pequena margem (4 pixels) para evitar cortes
+    # Margem de seguranca
     $chartObject = $Sheet.ChartObjects().Add($range.Left, $range.Top, ($range.Width * $Scale) + 4, ($range.Height * $Scale) + 4)
     try {
         $chart = $chartObject.Chart
@@ -364,8 +367,8 @@ try {
         $saldoImagePath = Join-Path $outputDir ("{0}_saldo.png" -f $safeClient)
         $address = "E$($block.HeaderRow):I$($block.TotalRow)"
         Write-PrepareLog "Cliente $client - comprovantes inicio"
-        # Imagem do Diario fica com escala normal (1.0)
-        Export-RangeImage -Sheet $diario -Address $address -OutputPath $imagePath -Scale 1.0
+        # Agora as duas ficam com escala 2.0 e qualidade maxima
+        Export-RangeImage -Sheet $diario -Address $address -OutputPath $imagePath -Scale 2.0
         Write-PrepareLog "Cliente $client - comprovantes fim"
 
         $saldoBlock = $null
@@ -385,7 +388,6 @@ try {
             $endCol = ColumnName $saldoBlock.EndCol
             $saldoAddress = "$startCol$($saldoBlock.StartRow):$endCol$($saldoBlock.EndRow)"
             Write-PrepareLog "Cliente $client - saldo inicio - $saldoAddress"
-            # Imagem do Saldo fica com qualidade maxima (2.0)
             Export-RangeImage -Sheet $saldoClientes -Address $saldoAddress -OutputPath $saldoImagePath -Scale 2.0
             Write-PrepareLog "Cliente $client - saldo fim"
         }
