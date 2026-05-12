@@ -259,7 +259,7 @@ function Export-RangeImage {
     $oldGrid = $true
     if ($null -ne $window) {
         $oldGrid = $window.DisplayGridlines
-        $window.DisplayGridlines = $false # Remove linhas de grade para fundo branco puro
+        $window.DisplayGridlines = $true # Mantem as linhas de grade para o efeito visual desejado
         $window.ScrollRow = [Math]::Max(1, $range.Row - 2)
         $window.ScrollColumn = [Math]::Max(1, $range.Column - 1)
     }
@@ -269,7 +269,7 @@ function Export-RangeImage {
     Start-Sleep -Milliseconds 300
     Write-PrepareLog "CopyPicture inicio: $Address"
     
-    # Alta resolucao (xlPrinter + xlPicture) para ambas agora
+    # Alta resolucao (xlPrinter + xlPicture)
     Invoke-ExcelAction { $range.CopyPicture(2, -4147) | Out-Null }
     
     Write-PrepareLog "CopyPicture fim: $Address"
@@ -367,7 +367,7 @@ try {
         $saldoImagePath = Join-Path $outputDir ("{0}_saldo.png" -f $safeClient)
         $address = "E$($block.HeaderRow):I$($block.TotalRow)"
         Write-PrepareLog "Cliente $client - comprovantes inicio"
-        # Agora as duas ficam com escala 2.0 e qualidade maxima
+        # Ambas agora com escala 2.0 e linhas de grade finas
         Export-RangeImage -Sheet $diario -Address $address -OutputPath $imagePath -Scale 2.0
         Write-PrepareLog "Cliente $client - comprovantes fim"
 
