@@ -7,6 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
 if (-not $Silent) {
 }
 
@@ -243,71 +244,17 @@ function ColumnName {
     return $name
 }
 
-# Metodo padrao: usa Chart.Export (para imagens que nao precisam de qualidade extra)
-function Export-RangeImage {
+# Metodo robusto para exportar range como imagem usando Clipboard (evita bugs do Chart.Export em ranges grandes)
+function Export-RangeToImage {
     param(
         [object]$Sheet,
         [string]$Address,
-        [string]$OutputPath
+        [string]$OutputPath,
+        [int]$Zoom = 100,
+        [bool]$DisplayGridlines = $false
     )
 
-    Write-PrepareLog "Exportando imagem (padrao): $Address -> $OutputPath"
-    $range = $Sheet.Range($Address)
-    $Sheet.Activate() | Out-Null
-    
-    $window = $Sheet.Application.ActiveWindow
-    $oldGrid = $true
-    if ($null -ne $window) {
-        $oldGrid = $window.DisplayGridlines
-        $window.DisplayGridlines = $false
-        $window.ScrollRow = [Math]::Max(1, $range.Row - 2)
-        $window.ScrollColumn = [Math]::Max(1, $range.Column - 1)
-    }
-    
-    $range.Select() | Out-Null
-    [System.Windows.Forms.Clipboard]::Clear()
-    Start-Sleep -Milliseconds 300
-    Write-PrepareLog "CopyPicture inicio: $Address"
-    Invoke-ExcelAction { $range.CopyPicture(1, 2) | Out-Null }
-    Write-PrepareLog "CopyPicture fim: $Address"
-    
-    if ($null -ne $window) {
-        $window.DisplayGridlines = $oldGrid
-    }
-    
-    Start-Sleep -Milliseconds 500
-
-    $chartObject = $Sheet.ChartObjects().Add($range.Left, $range.Top, $range.Width + 4, $range.Height + 4)
-    try {
-        $chart = $chartObject.Chart
-        $chartObject.Activate() | Out-Null
-        $chart.ChartArea.Border.LineStyle = -4142
-        
-        Start-Sleep -Milliseconds 150
-        Write-PrepareLog "Chart paste inicio: $Address"
-        Invoke-ExcelAction { $chart.Paste() | Out-Null }
-        Write-PrepareLog "Chart paste fim: $Address"
-        Start-Sleep -Milliseconds 150
-        Write-PrepareLog "Chart export inicio: $OutputPath"
-        Invoke-ExcelAction { $chart.Export($OutputPath, "PNG") | Out-Null }
-        Write-PrepareLog "Chart export fim: $OutputPath"
-    } finally {
-        $chartObject.Delete() | Out-Null
-    }
-}
-
-# Metodo de alta qualidade: zoom 200% + captura direto do clipboard (para imagem do Saldo)
-# Isso simula exatamente o que acontece quando voce copia e cola manualmente no WeChat
-function Export-RangeImageHQ {
-    param(
-        [object]$Sheet,
-        [string]$Address,
-        [string]$OutputPath
-    )
-
-    Add-Type -AssemblyName System.Drawing
-
-    Write-PrepareLog "Exportando imagem HQ (zoom 200%%): $Address -> $OutputPath"
+    Write-PrepareLog "Exportando imagem ($Zoom%): $Address -> $OutputPath"
     $range = $Sheet.Range($Address)
     $Sheet.Activate() | Out-Null
     
@@ -317,49 +264,52 @@ function Export-RangeImageHQ {
     if ($null -ne $window) {
         $oldZoom = $window.Zoom
         $oldGrid = $window.DisplayGridlines
-        $window.DisplayGridlines = $true # Linhas de grade finas
-        $window.Zoom = 200 # Zoom 200% = dobro de pixels na captura
+        $window.DisplayGridlines = $DisplayGridlines
+        $window.Zoom = $Zoom
         $window.ScrollRow = [Math]::Max(1, $range.Row - 2)
         $window.ScrollColumn = [Math]::Max(1, $range.Column - 1)
     }
     
-    Start-Sleep -Milliseconds 300
     $range.Select() | Out-Null
     [System.Windows.Forms.Clipboard]::Clear()
-    Start-Sleep -Milliseconds 300
+    Start-Sleep -Milliseconds 400
     
-    Write-PrepareLog "CopyPicture HQ inicio: $Address"
-    # xlScreen = 1, xlBitmap = 2 -> captura exatamente o que aparece na tela (com zoom 200%)
+    Write-PrepareLog "CopyPicture inicio: $Address"
+    # xlScreen = 1, xlBitmap = 2
     Invoke-ExcelAction { $range.CopyPicture(1, 2) | Out-Null }
-    Write-PrepareLog "CopyPicture HQ fim: $Address"
+    Write-PrepareLog "CopyPicture fim: $Address"
     
-    Start-Sleep -Milliseconds 500
+    Start-Sleep -Milliseconds 600
     
-    # Pega a imagem direto do clipboard - sem passar pelo Chart.Export (que limita a 96 DPI)
-    $img = [System.Windows.Forms.Clipboard]::GetImage()
+    $img = $null
+    for ($i = 1; $i -le 5; $i++) {
+        $img = [System.Windows.Forms.Clipboard]::GetImage()
+        if ($null -ne $img) { break }
+        Write-PrepareLog "Clipboard vazio, tentando novamente ($i/5)..."
+        Start-Sleep -Milliseconds 300
+    }
+
     if ($null -ne $img) {
-        Write-PrepareLog "Clipboard HQ: imagem obtida $($img.Width)x$($img.Height)"
+        Write-PrepareLog "Clipboard: imagem obtida $($img.Width)x$($img.Height)"
         $img.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png)
         $img.Dispose()
-        Write-PrepareLog "Clipboard HQ: salvo em $OutputPath"
+        Write-PrepareLog "Clipboard: salvo em $OutputPath"
     } else {
-        Write-PrepareLog "AVISO: Clipboard vazio, usando metodo alternativo"
-        # Fallback: se o clipboard falhar, usa o metodo padrao com chart
+        Write-PrepareLog "AVISO: Clipboard falhou apos retentativas, tentando metodo Chart (Fallback)"
         $chartObject = $Sheet.ChartObjects().Add($range.Left, $range.Top, $range.Width + 4, $range.Height + 4)
         try {
             $chart = $chartObject.Chart
             $chartObject.Activate() | Out-Null
             $chart.ChartArea.Border.LineStyle = -4142
-            Start-Sleep -Milliseconds 150
+            Start-Sleep -Milliseconds 300
             Invoke-ExcelAction { $chart.Paste() | Out-Null }
-            Start-Sleep -Milliseconds 150
+            Start-Sleep -Milliseconds 300
             Invoke-ExcelAction { $chart.Export($OutputPath, "PNG") | Out-Null }
         } finally {
             $chartObject.Delete() | Out-Null
         }
     }
     
-    # Restaura configuracoes originais
     if ($null -ne $window) {
         $window.Zoom = $oldZoom
         $window.DisplayGridlines = $oldGrid
@@ -431,8 +381,8 @@ try {
         $saldoImagePath = Join-Path $outputDir ("{0}_saldo.png" -f $safeClient)
         $address = "E$($block.HeaderRow):I$($block.TotalRow)"
         Write-PrepareLog "Cliente $client - comprovantes inicio"
-        # Imagem 1 (Diario): Qualidade padrao, sem alteracoes
-        Export-RangeImage -Sheet $diario -Address $address -OutputPath $imagePath
+        # Imagem 1 (Diario): Agora usa o metodo robusto via Clipboard
+        Export-RangeToImage -Sheet $diario -Address $address -OutputPath $imagePath -Zoom 100 -DisplayGridlines $false
         Write-PrepareLog "Cliente $client - comprovantes fim"
 
         $saldoBlock = $null
@@ -453,7 +403,7 @@ try {
             $saldoAddress = "$startCol$($saldoBlock.StartRow):$endCol$($saldoBlock.EndRow)"
             Write-PrepareLog "Cliente $client - saldo inicio - $saldoAddress"
             # Imagem 2 (Saldo): Alta qualidade - zoom 200% + clipboard direto
-            Export-RangeImageHQ -Sheet $saldoClientes -Address $saldoAddress -OutputPath $saldoImagePath
+            Export-RangeToImage -Sheet $saldoClientes -Address $saldoAddress -OutputPath $saldoImagePath -Zoom 200 -DisplayGridlines $true
             Write-PrepareLog "Cliente $client - saldo fim"
         }
 
